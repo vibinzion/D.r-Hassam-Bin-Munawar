@@ -74,10 +74,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const { GoogleGenAI } = await import('@google/genai');
-    const ai = new GoogleGenAI({ apiKey });
-
-    // Format chat history for Google Gen AI
     const formattedHistory = Array.isArray(history)
       ? history.slice(-6).map((msg: { role: string; content: string }) => ({
           role: msg.role === 'assistant' ? 'model' : 'user',
@@ -85,26 +81,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }))
       : [];
 
-    const contents = [
+    const contentsBody = [
       ...formattedHistory,
-      {
-        role: 'user',
-        parts: [{ text: message }],
-      },
+      { role: 'user', parts: [{ text: message }] },
     ];
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-pro',
-      contents,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        maxOutputTokens: 600,
-        temperature: 0.7,
+    const gResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: contentsBody,
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          generationConfig: { maxOutputTokens: 600, temperature: 0.7 },
+        }),
       },
-    });
+    );
 
-    const reply = response.text || getSmartFallbackResponse(message);
-    return res.status(200).json({ reply, fallback: false });
+    const data = await gResponse.json();
+
+    if (!gResponse.ok) {
+      console.error('Direct API Error:', data);
+      return res.status(200).json({
+        reply: getSmartFallbackResponse(message),
+        fallback: true,
+      });
+    }
+
+    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    return res.status(200).json({
+      reply: reply || getSmartFallbackResponse(message),
+      fallback: !reply,
+    });
   } catch (err) {
     console.error('Gemini API execution error:', err);
     return res.status(200).json({
@@ -112,7 +121,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       fallback: true,
     });
   }
-}
 
 /**
  * High-quality clinical fallback (100% Clean English)
